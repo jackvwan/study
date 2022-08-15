@@ -1,6 +1,6 @@
 1. uptime               // 快速检查平均负载
 2. dmesg | tail         // 显示过去10条系统日志
-3. vmstat -l            // 统计虚拟内存及其他系统指标
+3. vmstat l             // 统计虚拟内存及其他系统指标
 4. mpstat -P ALL 1      // per-CPU 状态
 5. pidstat 1            // 按进程展示CPU使用情况
 6. iostat -xz 1         // 储存设备IO指标
