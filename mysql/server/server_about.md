@@ -22,5 +22,24 @@ Mysql客户端与服务器之间的通信协议是“半双工”的。这意味
 
 ### 查询状态
 
-**Sleep**<br>
-&emsp;&emsp;
+
+**Sleep**
+<br>&emsp;&emsp;线程正在等待客户端发送新请求。
+
+**Query**
+<br>&emsp;&emsp;线程正在执行查询或正在将结果发送给客户端。
+
+**Locked**
+<br>&emsp;&emsp;在Mysql服务器层，该线程正在等待表锁。在储存引擎级别实现的锁，例如InnoDB的行锁，不会体现在线程状态中。
+
+**Analyzing and statistics**
+<br>&emsp;&emsp;线程正在收集储存引擎统计信息，并生成执行计划。
+
+**Copying to tmp table [on disc]**
+<br>&emsp;&emsp;线程正在执行查询，并将结果复制到一个临时表中，这种状态一般要么在做 GROUP BY，要么是在文件排序，或者是UNION操作。如果这个状态后面还有 "on disk" 标记，那表锁Mysql正在将一个内存临时表放到磁盘上。
+
+**Sorting result**
+<br>&emsp;&emsp;线程正在对结果进行排序。
+
+**Sending data**
+<br>&emsp;&emsp;这表示多种情况：线程可能在多个状态之间传送数据，或者在生成结果集，或者在向客户端返回数据。
