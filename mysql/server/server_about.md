@@ -22,7 +22,6 @@ Mysql客户端与服务器之间的通信协议是“半双工”的。这意味
 
 ### 查询状态
 
-
 **Sleep**
 <br>&emsp;&emsp;线程正在等待客户端发送新请求。
 
@@ -43,3 +42,232 @@ Mysql客户端与服务器之间的通信协议是“半双工”的。这意味
 
 **Sending data**
 <br>&emsp;&emsp;这表示多种情况：线程可能在多个状态之间传送数据，或者在生成结果集，或者在向客户端返回数据。
+
+### 语法解析器和预处理
+
+在这一步，Mysql检查验证语法错误，还会进行权限验证。
+
+### 查询优化器
+
+现在语法树被认为是合法的了，将由优化器将其转化成执行计划。 Mysql使用基于成本的优化器。
+
+有很多原因会导致Mysql优化器选择错误的执行计划，如下所示：
+
+* 统计信息不准确。Mysql依赖储存引擎提供的统计信息来评估成本，但储存引擎之间提供的数据准确性不同。如：InnoDB因为其MVCC的架构，并不能维护一个数据表行数的精确统计信息。
+* 执行计划中的估算成本不等同于实际执行的成本。如，某个执行计划虽然需要读取更多的页面，但它的实际成本却更小。因为这些页面都是顺序读或者页面都已在内存中。
+* Mysql的最优可能和你想的最优不一样。我们可能希望执行时间尽可能的短，但Mysql只是基于成本模型选择最优的执行计划，有时，这并不是最快的执行方式。
+* Mysql从不考虑其他并发执行的查询。
+* Mysql并不总是基于成本进行优化。有时会基于一些固定的规则，例如，如果存在全文搜索的Match()子句，则在存在全文索引的时候就使用全文索引。即使有时使用别的索引和WHERE条件会执行的更快。
+* Mysql不会考虑不受其控制的操作的成本，例如执行储存过程或者用户自定义函数的成本。
+* 优化器有时无法估算所有可能的执行计划。
+
+下面是一些Mysql能够处理的优化类型：
+
+**重新定义关联表的顺序**
+<br>&emsp;&emsp;数据表的关联并不总是按照查询中指定的顺序进行。
+
+**将外连接转化成内连接**
+<br>&emsp;&emsp;并不是所有的 OUTER JOIN语句都必须以外连接的方式执行。
+
+**使用等价变换规则**
+<br>&emsp;&emsp;Mysql可以使用一些等价变换来简化并规范表达式。如：(5=5 AND a>5)将被改写成 a >５。
+
+**优化 COUNT()、MIN() 和 MAX()**
+<br>&emsp;&emsp;。
+
+**预估并转化为常数表达式**
+<br>&emsp;&emsp;当Mysql检测到一个表达式可以转化为常数的时候，就会一直把该表达式作为常数进行优化处理。例如，一个用户自定义变量在查询中没有发生变化时就可以转化成一个常数。数学表达式则是另一种典型例子。甚至一个查询也能转化为一个常数，如，在索引列上执行MIN()。
+
+**覆盖索引扫描**
+<br>&emsp;&emsp;当索引中的列包含所有查询中需要使用的列时，Mysql就可以使用索引返回需要的数据，无需回表查询。
+
+**子查询优化**
+<br>&emsp;&emsp;Mysql在某些情况下可以将子查询转换为一种效率更高的形式，从而减少多个查询多次对数据的访问。
+
+**提前终止查询**
+<br>&emsp;&emsp;在发现已经满足查询需求时，Mysql总是能立刻终止查询。如，当使用LIMIT子句时。
+
+**等值传播**
+<br>&emsp;&emsp;如果两个列的值通过等式关联，那么Mysql能够把其中一个列的WHERE条件传递到另一列上。
+
+**列表IN()的比较**
+<br>&emsp;&emsp;在很多数据库系统中，IN完全等价于多个OR子句。Mysql会将IN列表的数据先排序，然后通过二分查找来确定列表中的值是否满足条件。
+
+### 排序优化
+
+Mysql有如下两种排序算法
+
+**1. 两次传输排序（旧版本使用）**
+<br>&emsp;&emsp;读取行指针和需要排序的字段，对其进行排序，然后再根据排序结果读取所需要的数据行。成本非常高。
+
+**2. 单次传输排序（新版本使用）**
+<br>&emsp;&emsp;先读取查询所需要的所有列，然后再根据给定列排序，最后直接返回排序后的结果。在Mysql4.1引入。这种排序方式会消耗大量内存，但效率更高。
+
+两种算法都有优点和缺点。当查询需要所有列的总长度不超过max_length_for_sort_data时，使用“单次传输排序”。
+
+在关联查询时，如果需要排序，Mysql会分两种情况来处理这样的排序。
+
+1. 如果ORDER BY子句中的所有列都来自关联的第一个表，那么Mysql在关联处理第一个表时就进行文件排序，Extra字段显示 "Using filesort"。
+2. 否则，Mysql会将关联结果存放在一个临时表中，然后在所有关联都结束后，再进行排序。Extra字段显示 "Using temporary; Using filesort"。
+
+在Mysql5.6版本之前，查询中即使有LIMIT子句，Mysql也会先对所有数据排序后再应用LIMIT子句。在5.6版本后，Mysql会先抛弃不满足条件的结果，然后再进行排序。
+
+### 关联子查询
+
+Mysql 的关联子查询实现得很差。最糟糕的一类查询是WHERE条件中包含IN的子查询（呜呜呜）。
+
+如，有如下子查询：
+
+```mysql
+SELECT * FROM sakila.film
+    WHERE file_id IN(
+        SELECT film_id FROM sakila.film_actor WHERE actor_id = 1;)
+```
+
+通常，我们会认为Mysql先执行子查询返回所有包含actor_id为1的film_id。很不幸，Mysql不是这样的。Mysql会将相关的外层表压到子查询中，它认为这样可以更高效率的找到数据行。Mysql会将查询改写成下面这样：
+
+```mysql
+SELECT * FROM sakila.film
+    WHERE WXISTS(
+        SELECT * film_id FROM sakila.film_actor WHERE actor_id = 1
+        AND film_actor.film_id = film.film_id);
+```
+
+这时，子查询需要根据film_id来关联外部表film，因为需要film_id字段，所以Mysql认为无法先执行这个子查询。Mysql先选择对film表进行全表扫描，然后根据返回的film_id逐个执行子查询。我们可以用下面的方法来重写这个查询：
+
+```mysql
+SELECT film.* FROM sakila.film
+    INNER JOIN sakila.film_actor USING(film_id)
+        WHERE actor_id = 1;
+```
+
+#### 如何用好关联子查询
+
+并不是所有关联子查询的性能都很差。很多时候，关联子查询是一种非常合理、自然，甚至是性能最好的写法。
+
+如，我们希望获取所有包含同一个演员参演的电影，因为一个电影有很多演员参演，所以可能返回重复记录，需要使用DISTINCT：
+
+```mysql
+SELECT DISTINCG film.film_id FROM sakila.film
+    INNER JOIN sakila.film_actor USING(film_id);
+```
+
+用上面的语句很难表达清楚“包含同一个参演演员”的逻辑。如果使用EXISTS，则很容易表达清楚此逻辑，而且不需要DISTINCT和GROUP BY，也不会参数重复的结果集，一旦使用DISTINCT和GROUP BY，那么通常会产生临时中间表。下面我们用子查询替换上面的关联：
+
+```mysql
+SELECT film_id FROM sakila.film
+    WHERE EXISTS(SELECT * FROM sakila.film_actor
+    WHERE film.film_id = film_actor.film_id);
+```
+
+### UNION 的限制
+
+有时，Mysql无法将限制条件从外层下推到内层，这使得原本能够限制部分返回结果的条件无法应用到内层查询优化上。如果希望UNION的各个子句能够根据LIMIT只取部分结果集，或者希望能够先排好序再合并结果集的话，就需要在UNION的各个子句中分别使用这些子句。如：
+
+```mysql
+(SELECT first_name, last_name FROM sakila.actor ORDER BY last_name LIMIT 20)
+UNION ALL
+(SELECT first_name, last_name FROM sakila.customer ORDER BY last_name LIMIT 20)
+ORDER BY last_name LIMIT 20;
+```
+
+### 等值传递
+
+某些时候，等值传递会带来一些意想不到的额外消耗。例如，有一个非常大的IN()列表，而Mysql优化器发现存在WHERE、ON或者USING子句，将这个列表的值与另一个表的某个列相关联。那么优化器会将IN()列表都复制应用到关联的各个表中。通常，因为各个表新增了过滤条件，优化器可以更高效的从储存引擎过滤记录。但如果这个列表非常大，则会导致优化和执行都变慢。
+
+### 优化关联查询
+
+需要特别注意的是:
+
+* 确保ON或者USING子句中的列上有索引。如果优化器的关联顺序是B、A，那么就不需要在B表的对应列上建立索引。一般来说，只需要在关联顺序中的第二个表的相应列上建立索引。
+* 确保任何的GROUP BY和ORDER BY中的表达式只涉及到一个表中的列，这样Mysql才有可能使用索引来优化这个过程。
+* 当升级Mysql时需要注意：关联语法、运算符优先级等其他可能会发生变更的地方。
+
+### GROUP BY和DISTINCT优化
+
+在很多情况下，Mysql都使用同样的办法优化这两种查询，事实上，Mysql优化器会在内部处理的时候相互转化这两类查询。在无法使用索引时，使用两种策略来完成这两种操作：使用临时表或者文件排序。SQL_BIG_RESULT 和 SQL_SMALL_RESULT 提示可控制使用何种策略。
+
+如果需要对关联查询做 GROUP BY，并且是按照查找表中的某个列进行分组，那么通常采用查找表的标识列分组效率会比其他列更高。如：
+
+```mysql
+SELECT actor.first_name, actor.last_name, COUNT(*)
+FROM sakila.film_actor
+    INNER JOIN sakila.actor USING(actor_id)
+GROUP BY actor.first_name, actor.last_name;
+```
+
+换成下面的写法效率更高：
+
+```mysql
+SELECT actor.first_name, actor.last_name, COUNT(*)
+FROM sakila.film_actor
+    INNER JOIN sakila.actor USING(actor_id)
+GROUP BY film_actor.actor_id;
+```
+
+使用actor.actor_id列分组的效率甚至比使用film_actor.actor_id更好。这个查询利用了演员的姓名和ID直接相关的特点。服务器可能通过设置 SQL_MODE 来禁止这种写法，可通过MIN或者MAX来绕过：
+
+```mysql
+SELECT MIN(actor.first_name), MAX(actor.last_name) ...;
+```
+
+这种写法是不清晰的，但为了效率可以考虑。
+
+并不是所有关联语句的分组查询都可以改写成在SELECT中直接使用非分组列的形式的。SELECT后面出现的非分组列一定是直接依赖分组列，并且在每个组内的值是唯一的，或者业务上根本不在乎这个值。
+
+在分组查询的SELECT中直接使用非分组列通常不是什么好主意，当索引改变，或者优化器选择了不同的优化策略时都可能会导致结果不一致。建议始终使用含义明确的语法。将SQL_MODE设置为包含ONLY_FULL_GROUP_BY可以禁止此类查询。
+
+如果没有通过 ORDER BY 子句显示指定排序列，当查询使用 GROUP BY 子句时，结果集会自动按照分组的字段进行排序。如果不关心结果集的顺序，可以使用 ORDER BY NULL。
+
+在GROUP BY子句可以直接使用DESC或者ASC关键字使结果集直接排序。
+
+### 优化LIMIT分页
+
+通常使用LIMIT加上OFFSET的办法来实现分页。如果有对应索引，效率通常不错，否则会有大量文件排序操作。
+
+当OFFSET非常大时，Mysql会做很多无用的工作，代价非常高。优化此类分页查询的一个最简单的办法是尽可能使用索引覆盖扫描，而不是查询所有的列。然后再根据需要做一次关联操作再返回所需的列。对于偏移量很大的时候，这样做效率提升很大，考虑一下查询：
+
+```mysql
+SELECT film_id, description FROM sakila.film ORDER BY title LIMIT 50, 5;
+```
+
+如果这个表非常大，查询最好改成以下形式：
+
+```mysql
+SELECT film.film_id, film.description
+FROM sakila.film
+    INNER JOIN (
+        SELECT film_id FROM sakila.film
+        ORDER BY title LIMIT 50, 5
+    ) AS lim USING(film_id);
+```
+
+这里的延迟关联大大提示了查询效率，它让Mysql扫描尽可能少的页面。这个技术也可用于优化关联查询中的LIMIT子句。
+
+有时也可将LIMIT查询转换成已知位置的查询，让Mysql通过范围扫描获得对应的结果。例如，已经知道下一次查询用的边界值，则上面的查询可改写成：
+
+```mysql
+SELECT film_id, description FROM sakila.film
+WHERE film_id > 50 ORDER BY film_id LIMIT 5;
+
+OR
+
+SELECT film_id, description FROM sakila.film
+WHERE film_id BETWEEN 51 AND 55 ORDER BY film_id;
+```
+
+### 优化SQL_CALC_FOUND_ROWS
+
+分页的时候，另一个常用的技巧是在LIMIT语句中加上SQL_CALC_FOUND_ROWS提示，这样可以获得去掉LIMIT以后满足条件的行数。看起来Mysql使用了某种很高深的技术。实际上，Mysql是在扫描了所有满足条件的行以后，才能知道所有的行数。所以加上这个提示之后，Mysql都会扫描所有满足条件的行，然后抛弃不需要的行，而不是在获取到满足LIMIT行数后就终止扫描，所以该提示的代价可能非常高。
+
+一个更好的设计是将具体的页数换成“下一页”按钮，假设每页需显示20条记录，那么，我们每次查询21条数据，如果第21条记录存在，则使下一页有效。
+
+另一种做法是先获取较多行数，例如，缓存1000条，然后每次分页都从这个缓存获取。这样可以让应用程序根据结果集的大小采取不同的策略，如果结果集小于1000，则可以显示所有页数。如果结果集大于1000，则可将多出来的部分显示成 '...'。
+
+有时，也可考虑使用EXPLAIN中的rows结果来作为结果集的近似值。当需要精确结果时，再使用COUNT(*)。
+
+### 优化UNION查询
+
+Mysql总是通过创建临时表的方式来执行UNION查询。因此很多优化无法使用。
+
+除非确实需要服务器消除重复的行，否则一定要使用 UNION ALL，这很重要。如果没有ALL关键字，那么，Mysql会给临时表加上DISTINCT选项，这样做代价很高。
