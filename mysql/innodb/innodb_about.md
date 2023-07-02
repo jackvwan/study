@@ -106,3 +106,84 @@ ICP受以下条件限制：
     * 引用子查询的条件无法下推。
     * 无法推下涉及存储函数的条件。存储引擎无法调用存储的函数。
     * 触发条件无法下推。
+
+
+## 锁
+
+* 在 READ COMMITTED 事务隔离级别下，除了唯一性约束检查和外键约束的检查需要 gap lock，InnoDB不会使用 gap lock 的锁算法；
+* 在 REPEATABLE READ 事务隔离级别下，使用 Next-Key Lock 锁算法；
+
+### Next-Key Lock
+
+Next-Key Lock是一种左开右闭区间的锁。在某些情况下，Next-Key Lock会退化成 Gap Lock 以及 Record Lock。
+
+#### Next-Key Lock加锁分析
+
+##### 唯一索引等值查询存在的数据
+
+唯一索引等值查询存在的数据，Next-Key Lock会退化成 Record Lock。
+
+##### 唯一索引等值查询不存在的数据
+
+唯一索引等值查询不存在的数据，Next-Key Lock会退化成 Gap Lock，范围是包含查询值的区间。
+
+##### 唯一索引范围查询
+
+###### 大于的范围查询
+
+大于的范围查询对查询的范围使用 Next-Key Lock。
+
+###### 小于的范围查询
+
+小于的范围查询对查询的范围使用 Next-Key Lock，最右侧的范围使用 Gap Lock，如果最右侧是 supremum pseudo-record，那么最右侧的范围也使用 Next-Key Lock。
+
+注：即使小于的值是存在的数据的右边界值+1，(右边界，下一个记录) 也需要加锁，即：
+| id |
+| -- |
+| 1  |
+| 5  |
+| 7  |
+| 9  |
+
+SELECT * FROM table WHERE id < 8 FOR UPDATE. 加锁：(1, 5]、(5, 7]、(7, 9).
+
+###### 等值查询、范围查询混合
+
+等值查询部分使用等值查询规则，范围查询部分使用范围查询规则。
+
+##### 非唯一索引查询
+
+非唯一索引可以有很多个，所以非唯一索引查询都是范围查询。对非唯一索引加锁还会对主键索引进行加锁，但只会对扫描到的已存在记录加 Record Lock。
+
+非唯一索引上的锁使用 {ununique, primary} 表示。当 {u，p} 代表左边界时，{u, p-1} 不在范围中，{u, p+1} 在范围中；当 {u，p} 代表右边界时，{u, p-1} 在范围中，{u, p+1} 不在范围中。
+
+###### 非唯一索引等值查询
+
+非唯一索引等值查询，对等值使用 Next-Key Lock，对边界使用 Gap Lock，即：
+
+| id | age |
+| -- | --- |
+| 1  |  10 |
+| 5  |  20 |
+| 7  |  30 |
+| 9  |  40 |
+
+1. Select * From table Where age = 20，锁定 ({10, 1}, {20, 5}]、({20, 5}, {30, 7}) 以及 Record Lock 5.
+2. Select * From table Where age = 25，锁定 ({20, 5}, {30, 7})
+
+###### 非唯一索引范围查询
+
+非唯一索引范围查询总是使用 Next-Key Lock，不会退化成 Record Lock 和 Gap Lock。
+
+| id | age |
+| -- | --- |
+| 1  |  10 |
+| 5  |  20 |
+| 7  |  30 |
+| 9  |  40 |
+
+1. Select * From table Where age > 20，锁定 ({20, 5}, {30, 7}]、({30, 7}, {40, 9}]、({40, 9}, {supremum pseudo-record}] 以及 Record Lock 7、9.
+
+2. Select * From table Where age < 30，锁定 (infimum pseudo-record, {10, 1}]、({10, 1}, {20, 5}]、({20, 5}, {30, 7}] 以及 Record Lock 1、5.
+
+3. Select * From table Where age < 31，锁定 (infimum pseudo-record, {10, 1}]、({10, 1}, {20, 5}]、({20, 5}, {30, 7}]、 ({30, 7}, {40, 9}] 以及 Record Lock 1、5、7.
